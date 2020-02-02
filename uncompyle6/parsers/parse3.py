@@ -1548,10 +1548,12 @@ class Python3Parser(PythonParser):
         self.check_reduce["while1elsestmt"] = "noAST"
         self.check_reduce["ifelsestmt"] = "AST"
         self.check_reduce["ifstmt"] = "AST"
-        if self.version == 3.6:
+        if 3.5 <= self.version <= 3.6:
             self.reduce_check_table["iflaststmtl"] = iflaststmt
-            self.check_reduce["iflaststmt"] = "AST"
             self.check_reduce["iflaststmtl"] = "AST"
+            if self.version == 3.6:
+                self.check_reduce["iflaststmt"] = "AST"
+            pass
         self.check_reduce["annotate_tuple"] = "noAST"
         self.check_reduce["except_handler_else"] = "tokens"
         self.check_reduce["testtrue"] = "tokens"
@@ -1584,7 +1586,7 @@ class Python3Parser(PythonParser):
         elif lhs == "kwarg":
             arg = tokens[first].attr
             return not (isinstance(arg, str) or isinstance(arg, unicode))
-        elif lhs in ("iflaststmt", "iflaststmtl") and self.version == 3.6:
+        elif lhs in ("iflaststmt", "iflaststmtl") and 3.5 <= self.version <= 3.6:
             return ifstmt(self, lhs, n, rule, ast, tokens, first, last)
         elif rule == ("ifstmt", ("testexpr", "_ifstmts_jump")):
             # FIXME: go over what's up with 3.0. Evetually I'd like to remove RETURN_END_IF
