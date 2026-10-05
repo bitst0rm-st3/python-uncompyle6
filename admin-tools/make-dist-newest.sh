@@ -3,11 +3,13 @@ PACKAGE=uncompyle6
 
 # FIXME put some of the below in a common routine
 function finish {
-  cd $owd
+  if [[ -n "$make_uncompyle6_newest_owd" ]] then
+     cd $make_uncompyle6_newest_owd
+  fi
 }
 
 cd $(dirname ${BASH_SOURCE[0]})
-owd=$(pwd)
+make_uncompyle6_newest_owd=$(pwd)
 trap finish EXIT
 
 if ! source ./pyenv-newest-versions ; then
@@ -21,7 +23,16 @@ cd ..
 source $PACKAGE/version.py
 echo $__version__
 
+rm -fr build
 for pyversion in $PYVERSIONS; do
+    echo --- $pyversion ---
+    if [[ ${pyversion:0:4} == "pypy" ]] ; then
+	echo "$pyversion - PyPy does not get special packaging"
+	continue
+    elif [[ ${pyversion:0:4} == "graa" ]] ; then
+	echo "$pyversion - Graal does not get special packaging"
+	continue
+    fi
     if ! pyenv local $pyversion ; then
 	exit $?
     fi
@@ -31,8 +42,9 @@ for pyversion in $PYVERSIONS; do
     # Pick out first two number of version, e.g. 3.5.1 -> 35
     first_two=$(echo $pyversion | cut -d'.' -f 1-2 | sed -e 's/\.//')
     rm -fr build
-    python setup.py bdist_egg bdist_wheel
-    mv -v dist/${PACKAGE}-$__version__-{py2.py3,py$first_two}-none-any.whl
+    pip wheel --wheel-dir=dist -e .
+    mv -v dist/${PACKAGE}-${__version__}-{py3,py$first_two}-none-any.whl
 done
 
-python ./setup.py sdist
+python -m build --sdist
+finish

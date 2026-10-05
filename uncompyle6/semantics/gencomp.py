@@ -19,13 +19,13 @@ Generators and comprehension functions
 
 from typing import Optional
 
-from xdis import iscode
+from xdis import co_flags_is_async, iscode
 
 from uncompyle6.parser import get_python_parser
 from uncompyle6.scanner import Code
+from uncompyle6.scanners.tok import Token
 from uncompyle6.semantics.consts import PRECEDENCE
 from uncompyle6.semantics.helper import is_lambda_mode
-from uncompyle6.scanners.tok import Token
 
 
 class ComprehensionMixin:
@@ -38,11 +38,13 @@ class ComprehensionMixin:
     Python source code. In source code, the implicit function calls
     are not seen.
     """
+
     def closure_walk(self, node, collection_index):
-        """Dictionary and comprehensions using closure the way they are done in Python3.
+        """
+        Dictionary and comprehensions using closure the way they are done in Python3.
         """
         p = self.prec
-        self.prec = 27
+        self.prec = PRECEDENCE["lambda_body"] - 1
 
         code_index = 0 if node[0] == "load_genexpr" else 1
         tree = self.get_comprehension_function(node, code_index=code_index)
@@ -58,6 +60,10 @@ class ComprehensionMixin:
         n = tree[iter_index]
         list_if = None
         assert n == "comp_iter"
+
+        # Pick out important parts of the comprehension:
+        # * the variables we iterate over: "stores"
+        # * the results we accumulate: "n"
 
         # Find inner-most node.
         while n == "comp_iter":
@@ -93,9 +99,12 @@ class ComprehensionMixin:
         self.prec = p
 
     def comprehension_walk(
-        self, node, iter_index: Optional[int], code_index: int = -5,
+        self,
+        node,
+        iter_index: Optional[int],
+        code_index: int = -5,
     ):
-        p = self.prec
+        p: int = self.prec
         self.prec = PRECEDENCE["lambda_body"] - 1
 
         # FIXME: clean this up
@@ -107,7 +116,10 @@ class ComprehensionMixin:
             elif node[0] == "load_closure":
                 cn = node[1]
 
-        elif self.version >= (3, 0) and node in ("generator_exp", "generator_exp_async"):
+        elif self.version >= (3, 0) and node in (
+            "generator_exp",
+            "generator_exp_async",
+        ):
             if node[0] == "load_genexpr":
                 load_genexpr = node[0]
             elif node[1] == "load_genexpr":
@@ -128,7 +140,7 @@ class ComprehensionMixin:
 
         assert iscode(cn.attr)
 
-        code = Code(cn.attr, self.scanner, self.currentclass)
+        code = Code(cn.attr, self.scanner, self.currentclass, self.debug_opts["asm"])
 
         # FIXME: is there a way we can avoid this?
         # The problem is that in filter in top-level list comprehensions we can
@@ -136,7 +148,9 @@ class ComprehensionMixin:
         if is_lambda_mode(self.compile_mode):
             p_save = self.p
             self.p = get_python_parser(
-                self.version, compile_mode="exec", is_pypy=self.is_pypy,
+                self.version,
+                compile_mode="exec",
+                is_pypy=self.is_pypy,
             )
             tree = self.build_ast(code._tokens, code._customize, code)
             self.p = p_save
@@ -147,6 +161,27 @@ class ComprehensionMixin:
         # Remove single reductions as in ("stmts", "sstmt"):
         while len(tree) == 1:
             tree = tree[0]
+
+        if tree == "stmts":
+            # FIXME: rest is a return None?
+            # Verify this
+            # rest = tree[1:]
+            tree = tree[0]
+        elif tree == "lambda_start":
+            assert len(tree) <= 3
+            tree = tree[-2]
+            if tree == "return_expr_lambda":
+                tree = tree[1]
+            pass
+
+        if tree in (
+            "genexpr_func",
+            "genexpr_func_async",
+        ):
+            for i in range(3, 5):
+                if tree[i] == "comp_iter":
+                    iter_index = i
+                    break
 
         n = tree[iter_index]
 
@@ -178,9 +213,11 @@ class ComprehensionMixin:
         self.write(" in ")
         if node[2] == "expr":
             iter_expr = node[2]
+        elif node[3] in ("expr", "get_aiter"):
+            iter_expr = node[3]
         else:
             iter_expr = node[-3]
-        assert iter_expr == "expr"
+        assert iter_expr in ("expr", "get_aiter"), iter_expr
         self.preorder(iter_expr)
         self.preorder(tree[iter_index])
         self.prec = p
@@ -194,10 +231,15 @@ class ComprehensionMixin:
     ):
         """Non-closure-based comprehensions the way they are done in Python3
         and some Python 2.7. Note: there are also other set comprehensions.
+
+        Note: there are also other comprehensions.
         """
         # FIXME: DRY with listcomp_closure3
+
         p = self.prec
         self.prec = PRECEDENCE["lambda_body"] - 1
+
+        comp_for = None
 
         # FIXME? Nonterminals in grammar maybe should be split out better?
         # Maybe test on self.compile_mode?
@@ -232,53 +274,130 @@ class ComprehensionMixin:
 
         is_30_dict_comp = False
         store = None
+
         if node == "list_comp_async":
-            n = tree[2][1]
+            # We have two different kinds of grammar rules:
+            #   list_comp_async ::= LOAD_LISTCOMP LOAD_STR MAKE_FUNCTION_0 expr ...
+            # and:
+            #  list_comp_async  ::= BUILD_LIST_0 LOAD_ARG list_afor2
+            if tree[0] == "expr" and tree[0][0] == "list_comp_async":
+                tree = tree[0][0]
+            if tree[0] == "BUILD_LIST_0":
+                list_afor2 = tree[2]
+                assert list_afor2 == "list_afor2"
+                store = list_afor2[1]
+                assert store == "store"
+                n = list_afor2[3] if list_afor2[3] == "list_iter" else list_afor2[2]
+            else:
+                # ???
+                pass
+        elif node.kind in ("dict_comp_async", "set_comp_async"):
+            # We have two different kinds of grammar rules:
+            #   dict_comp_async ::= LOAD_DICTCOMP LOAD_STR MAKE_FUNCTION_0 expr ...
+            #   set_comp_async  ::= LOAD_SETCOMP LOAD_STR MAKE_FUNCTION_0 expr ...
+            # and:
+            #  dict_comp_async  ::= BUILD_MAP_0 genexpr_func_async
+            #  set_comp_async   ::= BUILD_SET_0 genexpr_func_async
+            if tree[0] == "expr":
+                tree = tree[0]
+
+            if tree[0].kind in ("BUILD_MAP_0", "BUILD_SET_0"):
+                genexpr_func_async = tree[1]
+                if genexpr_func_async == "genexpr_func_async":
+                    store = genexpr_func_async[2]
+                    assert store.kind.startswith("store")
+                    n = genexpr_func_async[4]
+                    assert n == "comp_iter"
+                    comp_for = collection_node
+                else:
+                    set_afor2 = genexpr_func_async
+                    assert set_afor2 == "set_afor2"
+                    n = set_afor2[1]
+                    store = n[1]
+                    comp_for = node[3]
+            else:
+                # ???
+                pass
+
+        elif node == "list_afor":
+            comp_for = node[0]
+            list_afor2 = node[1]
+            assert list_afor2 == "list_afor2"
+            store = list_afor2[1]
+            assert store == "store"
+            n = list_afor2[2]
+        elif node == "set_afor2":
+            comp_for = node[0]
+            set_iter_async = node[1]
+            assert set_iter_async == "set_iter_async"
+
+            store = set_iter_async[1]
+            assert store == "store"
+            n = set_iter_async[2]
+        elif node == "list_comp" and tree[0] == "expr":
+            list_iter = None
+            for list_iter_try in tree:
+                if list_iter_try == "list_iter":
+                    list_iter = list_iter_try
+                    break
+                if not list_iter_try:
+                    tree = tree[0][0]
+                    n = tree[iter_index]
+                else:
+                    n = list_iter
+                    pass
+                pass
+            pass
         else:
             n = tree[iter_index]
 
         if tree in (
-            "set_comp_func",
             "dict_comp_func",
+            "genexpr_func_async",
+            "generator_exp",
             "list_comp",
+            "set_comp",
+            "set_comp_func",
             "set_comp_func_header",
         ):
             for k in tree:
-                if k == "comp_iter":
+                if k.kind in ("comp_iter", "list_iter", "set_iter", "await_expr"):
                     n = k
                 elif k == "store":
                     store = k
                     pass
                 pass
             pass
-        elif tree in ("dict_comp", "set_comp"):
-            assert self.version == (3, 0)
-            for k in tree:
-                if k in ("dict_comp_header", "set_comp_header"):
-                    n = k
-                elif k == "store":
-                    store = k
-                elif k == "dict_comp_iter":
-                    is_30_dict_comp = True
-                    n = (k[3], k[1])
+        elif tree.kind in ("list_comp_async", "dict_comp_async", "set_afor2"):
+            if self.version == (3, 0):
+                for k in tree:
+                    if k in ("dict_comp_header", "set_comp_header"):
+                        n = k
+                    elif k == "store":
+                        store = k
+                    elif k == "dict_comp_iter":
+                        is_30_dict_comp = True
+                        n = (k[3], k[1])
+                        pass
+                    elif k == "comp_iter":
+                        n = k[0]
+                        pass
                     pass
-                elif k == "comp_iter":
-                    n = k[0]
-                    pass
-                pass
         elif tree == "list_comp_async":
             store = tree[2][1]
         else:
-            assert n == "list_iter", n
+            if n.kind in ("RETURN_VALUE_LAMBDA", "return_expr_lambda"):
+                self.prune()
+
+            assert n in ("list_iter", "comp_iter"), n
 
         # FIXME: I'm not totally sure this is right.
 
         # Find the list comprehension body. It is the inner-most
         # node that is not list_.. .
         if_node = None
-        comp_for = None
         comp_store = None
-        if n == "comp_iter":
+        if n == "comp_iter" and store is None:
             comp_for = n
             comp_store = tree[3]
 
@@ -289,7 +408,7 @@ class ComprehensionMixin:
 
         while n in ("list_iter", "list_afor", "list_afor2", "comp_iter"):
             # iterate one nesting deeper
-            if self.version == 3.0 and len(n) == 3:
+            if self.version == (3, 0) and len(n) == 3:
                 assert n[0] == "expr" and n[1] == "expr"
                 n = n[1]
             elif n == "list_afor":
@@ -302,14 +421,31 @@ class ComprehensionMixin:
                 n = n[0]
 
             if n in ("list_for", "comp_for"):
-                if n[2] == "store" and not store:
-                    store = n[2]
+                if n == "list_for" and not comp_for and n[0] == "expr":
+                    comp_for = n[0]
+
+                n_index = 3
+                if (
+                    (n[2] == "store")
+                    or (self.version == (3, 0) and n[4] == "store")
+                    and not store
+                ):
+                    if self.version == (3, 0):
+                        store = n[4]
+                        n_index = 5
+                    else:
+                        store = n[2]
                     if not comp_store:
                         comp_store = store
-                n = n[3]
-            elif n in ("list_if", "list_if_not",
-                       "list_if37", "list_if37_not",
-                       "comp_if", "comp_if_not"):
+                n = n[n_index]
+            elif n in (
+                "list_if",
+                "list_if_not",
+                "list_if37",
+                "list_if37_not",
+                "comp_if",
+                "comp_if_not",
+            ):
                 have_not = n in ("list_if_not", "comp_if_not", "list_if37_not")
                 if n in ("list_if37", "list_if37_not"):
                     n = n[1]
@@ -335,7 +471,7 @@ class ComprehensionMixin:
         assert store, "Couldn't find store in list/set comprehension"
 
         # A problem created with later Python code generation is that there
-        # is a lamda set up with a dummy argument name that is then called
+        # is a lambda set up with a dummy argument name that is then called
         # So we can't just translate that as is but need to replace the
         # dummy name. Below we are picking out the variable name as seen
         # in the code. And trying to generate code for the other parts
@@ -348,7 +484,16 @@ class ComprehensionMixin:
             self.write(": ")
             self.preorder(n[1])
         else:
-            self.preorder(n[0])
+            if self.version == (3, 0):
+                if isinstance(n, Token):
+                    body = store
+                elif len(n) > 1:
+                    body = n[1]
+                else:
+                    body = n[0]
+            else:
+                body = n[0]
+            self.preorder(body)
 
         if node == "list_comp_async":
             self.write(" async")
@@ -360,15 +505,29 @@ class ComprehensionMixin:
 
         if comp_store:
             self.preorder(comp_store)
+            comp_store = None
         else:
             self.preorder(store)
 
         self.write(" in ")
-        self.preorder(node[in_node_index])
+        if comp_for:
+            self.preorder(comp_for)
+        else:
+            try:
+                node[in_node_index]
+            except:
+                from trepan.api import debug
+
+                debug()
+            self.preorder(node[in_node_index])
 
         # Here is where we handle nested list iterations.
         if tree == "list_comp" and self.version != (3, 0):
-            list_iter = tree[1]
+            list_iter = None
+            for list_iter_try in tree:
+                if list_iter_try == "list_iter":
+                    list_iter = list_iter_try
+                    break
             assert list_iter == "list_iter"
             if list_iter[0] == "list_for":
                 self.preorder(list_iter[0][3])
@@ -383,7 +542,7 @@ class ComprehensionMixin:
             if have_not:
                 self.write("not ")
                 pass
-            self.prec = 27
+            self.prec = PRECEDENCE["lambda_body"] - 1
             self.preorder(if_node)
             pass
         self.prec = p
@@ -394,7 +553,7 @@ class ComprehensionMixin:
         find the comprehension node buried in the tree which may
         be surrounded with start-like symbols or dominiators,.
         """
-        self.prec = 27
+        self.prec = PRECEDENCE["lambda_body"] - 1
         code_node = node[code_index]
         if code_node == "load_genexpr":
             code_node = code_node[0]
@@ -410,7 +569,9 @@ class ComprehensionMixin:
         if self.compile_mode in ("listcomp",):  # add other comprehensions to this list
             p_save = self.p
             self.p = get_python_parser(
-                self.version, compile_mode="exec", is_pypy=self.is_pypy,
+                self.version,
+                compile_mode="exec",
+                is_pypy=self.is_pypy,
             )
             tree = self.build_ast(
                 code._tokens, code._customize, code, is_lambda=self.is_lambda
@@ -429,9 +590,153 @@ class ComprehensionMixin:
             if tree[0] in ("dom_start", "dom_start_opt"):
                 tree = tree[1]
 
-        while len(tree) == 1 or (
-            tree in ("stmt", "sstmt", "return", "return_expr", "return_expr_lambda")
-        ):
+        while len(tree) == 1 or (tree in ("stmt", "sstmt", "return", "return_expr")):
             self.prec = 100
             tree = tree[1] if tree[0] in ("dom_start", "dom_start_opt") else tree[0]
         return tree
+
+    def listcomp_closure3(self, node):
+        """
+        List comprehensions in Python 3 when handled as a closure.
+        See if we can combine code.
+        """
+
+        # FIXME: DRY with comprehension_walk_newer
+        p = self.prec
+        self.prec = 27
+
+        code_obj = node[1].attr
+        assert iscode(code_obj), node[1]
+        code = Code(code_obj, self.scanner, self.currentclass, self.debug_opts["asm"])
+
+        tree = self.build_ast(code._tokens, code._customize, code)
+        self.customize(code._customize)
+
+        # skip over: sstmt, stmt, return, return_expr
+        # and other singleton derivations
+        while len(tree) == 1 or (
+            tree in ("sstmt", "return") and tree[-1] in ("RETURN_LAST", "RETURN_VALUE")
+        ):
+            self.prec = 100
+            tree = tree[0]
+
+        n = tree[1]
+
+        # Pick out important parts of the comprehension:
+        # * the variables we iterate over: "stores"
+        # * the results we accumulate: "n"
+
+        # collections is the name of the expression(s) we are iterating over
+        collections = [node[-3]]
+        list_ifs = []
+
+        if self.version[:2] == (3, 0) and n.kind != "list_iter":
+            # FIXME 3.0 is a snowflake here. We need
+            # special code for this. Not sure if this is totally
+            # correct.
+            stores = [tree[3]]
+            assert tree[4] == "comp_iter"
+            n = tree[4]
+            # Find the list comprehension body. It is the inner-most
+            # node that is not comp_.. .
+            while n == "comp_iter":
+                if n[0] == "comp_for":
+                    n = n[0]
+                    stores.append(n[2])
+                    n = n[3]
+                elif n[0] in ("comp_if", "comp_if_not"):
+                    n = n[0]
+                    # FIXME: just a guess
+                    if n[0].kind == "expr":
+                        list_ifs.append(n)
+                    else:
+                        list_ifs.append([1])
+                    n = n[2]
+                    pass
+                else:
+                    break
+                pass
+
+            # Skip over n[0] which is something like: _[1]
+            self.preorder(n[1])
+
+        else:
+            assert n == "list_iter"
+            stores = []
+            # Find the list comprehension body. It is the inner-most
+            # node that is not list_.. .
+            while n == "list_iter":
+                # recurse one step
+                n = n[0]
+
+                # FIXME: adjust for set comprehension
+                if n == "list_for":
+                    stores.append(n[2])
+                    if self.version[:2] == (3, 0):
+                        body_index = 5
+                    else:
+                        body_index = 3
+
+                    n = n[body_index]
+                    if n[0] == "list_for":
+                        # Dog-paddle down largely singleton reductions
+                        # to find the collection (expr)
+                        c = n[0][0]
+                        if c == "expr":
+                            c = c[0]
+                        # FIXME: grammar is wonky here? Is this really an attribute?
+                        if c == "attribute":
+                            c = c[0]
+                        collections.append(c)
+                        pass
+                elif n in ("list_if", "list_if_not", "list_if_or_not"):
+                    if n[0].kind == "expr":
+                        list_ifs.append(n)
+                    else:
+                        list_ifs.append([1])
+                    if self.version[:2] == (3, 0) and n[2] == "list_iter":
+                        n = n[2]
+                    else:
+                        n = n[-2] if n[-1] == "come_from_opt" else n[-1]
+                    pass
+                elif n == "list_if37":
+                    list_ifs.append(n)
+                    n = n[-1]
+                    pass
+                elif n == "list_afor":
+                    collections.append(n[0][0])
+                    n = n[1]
+                    stores.append(n[1][0])
+                    n = n[2] if n[2].kind == "list_iter" else n[3]
+                pass
+
+            assert n == "lc_body", tree
+
+            if self.version[:2] == (3, 0):
+                body_index = 1
+            else:
+                body_index = 0
+            self.preorder(n[body_index])
+
+        # FIXME: add indentation around "for"'s and "in"'s
+        n_colls = len(collections)
+        for i, store in enumerate(stores):
+            if i >= n_colls:
+                break
+            token = collections[i]
+            if not isinstance(token, Token):
+                token = token.first_child()
+            if token == "LOAD_DEREF" and co_flags_is_async(code_obj.co_flags):
+                self.write(" async")
+                pass
+            self.write(" for ")
+            if self.version[:2] == (3, 0):
+                store = token
+            self.preorder(store)
+            self.write(" in ")
+            self.preorder(collections[i])
+            if i < len(list_ifs):
+                self.preorder(list_ifs[i])
+                pass
+            pass
+        self.prec = p

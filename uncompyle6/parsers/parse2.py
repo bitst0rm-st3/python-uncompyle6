@@ -1,4 +1,4 @@
-#  Copyright (c) 2015-2021 Rocky Bernstein
+#  Copyright (c) 2015-2021, 2024 Rocky Bernstein
 #  Copyright (c) 2000-2002 by hartmut Goebel <h.goebel@crazy-compilers.com>
 #
 #  Copyright (c) 1999 John Aycock
@@ -27,10 +27,11 @@ that a later phase can turn into a sequence of ASCII text.
 
 from __future__ import print_function
 
-from uncompyle6.parsers.reducecheck import (except_handler_else, ifelsestmt, tryelsestmt)
-from uncompyle6.parser import PythonParser, PythonParserSingle, nop_func
-from uncompyle6.parsers.treenode import SyntaxTree
 from spark_parser import DEFAULT_DEBUG as PARSER_DEFAULT_DEBUG
+
+from uncompyle6.parser import PythonParser, PythonParserSingle, nop_func
+from uncompyle6.parsers.reducecheck import except_handler_else, ifelsestmt, tryelsestmt
+from uncompyle6.parsers.treenode import SyntaxTree
 
 
 class Python2Parser(PythonParser):
@@ -312,6 +313,19 @@ class Python2Parser(PythonParser):
 
             opname_base = opname[: opname.rfind("_")]
 
+            if opname in ("BUILD_CONST_LIST", "BUILD_CONST_SET"):
+                rule = (
+                    """
+                       add_consts          ::= add_value+
+                       add_value           ::= ADD_VALUE
+                       add_value           ::= ADD_VALUE_VAR
+                       const_list          ::= COLLECTION_START add_consts %s
+                       expr                ::= const_list
+                       """
+                    % opname
+                )
+                self.addRule(rule, nop_func)
+
             # The order of opname listed is roughly sorted below
             if opname_base in ("BUILD_LIST", "BUILD_SET", "BUILD_TUPLE"):
                 # We do this complicated test to speed up parsing of
@@ -392,7 +406,6 @@ class Python2Parser(PythonParser):
                 "CALL_FUNCTION_VAR_KW",
                 "CALL_FUNCTION_KW",
             ):
-
                 args_pos, args_kw = self.get_pos_kw(token)
 
                 # number of apply equiv arguments:
@@ -513,7 +526,7 @@ class Python2Parser(PythonParser):
                 custom_seen_ops.add(opname)
                 continue
             elif opname == "LOAD_LISTCOMP":
-                self.addRule("expr ::= listcomp", nop_func)
+                self.addRule("expr ::= list_comp", nop_func)
                 custom_seen_ops.add(opname)
                 continue
             elif opname == "LOAD_SETCOMP":
@@ -642,22 +655,23 @@ class Python2Parser(PythonParser):
             pass
 
         self.reduce_check_table = {
-            # "and": and_check,
+            # "and": and_invalid,
             "except_handler_else": except_handler_else,
             "ifelsestmt": ifelsestmt,
-            # "or": or_check,
+            # "or": or_invalid,
             "tryelsestmt": tryelsestmt,
             "tryelsestmtl": tryelsestmt,
         }
         self.check_reduce["and"] = "AST"
-        self.check_reduce["except_handler_else"] = "tokens"
-        self.check_reduce["raise_stmt1"] = "tokens"
         self.check_reduce["assert_expr_and"] = "AST"
+        self.check_reduce["aug_assign2"] = "AST"
+        self.check_reduce["except_handler_else"] = "tokens"
+        self.check_reduce["ifelsestmt"] = "AST"
+        self.check_reduce["ifstmt"] = "tokens"
+        self.check_reduce["or"] = "AST"
+        self.check_reduce["raise_stmt1"] = "tokens"
         self.check_reduce["tryelsestmt"] = "AST"
         self.check_reduce["tryelsestmtl"] = "AST"
-        self.check_reduce["aug_assign2"] = "AST"
-        self.check_reduce["or"] = "AST"
-        self.check_reduce["ifstmt"] = "tokens"
         # self.check_reduce['_stmts'] = 'AST'
 
         # Dead code testing...
@@ -688,7 +702,7 @@ class Python2Parser(PythonParser):
             # an optimization where the "and" jump_false is back to a loop.
             jmp_false = ast[1]
             if jmp_false[0] == "POP_JUMP_IF_FALSE":
-                while (first < last and isinstance(tokens[last].offset, str)):
+                while first < last and isinstance(tokens[last].offset, str):
                     last -= 1
                 if jmp_false[0].attr < tokens[last].offset:
                     return True
@@ -697,8 +711,10 @@ class Python2Parser(PythonParser):
             # or that it jumps to the same place as the end of "and"
             jmp_false = ast[1][0]
             jmp_target = jmp_false.offset + jmp_false.attr + 3
-            return not (jmp_target == tokens[last].offset or
-                        tokens[last].pattr == jmp_false.pattr)
+            return not (
+                jmp_target == tokens[last].offset
+                or tokens[last].pattr == jmp_false.pattr
+            )
         # Dead code testing...
         # if lhs == 'while1elsestmt':
         #     from trepan.api import debug; debug()

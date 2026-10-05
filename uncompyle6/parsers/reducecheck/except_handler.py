@@ -1,7 +1,8 @@
-#  Copyright (c) 2020 Rocky Bernstein
+#  Copyright (c) 2020, 2025 Rocky Bernstein
 
-def except_handler(self, lhs, n, rule, ast, tokens, first, last):
-    end_token = tokens[last-1]
+
+def except_handler(self, lhs, n: int, rule, ast, tokens: list, first: int, last: int):
+    end_token = tokens[last - 1]
 
     # print("XXX", first, last)
     # for t in range(first, last):
@@ -13,7 +14,7 @@ def except_handler(self, lhs, n, rule, ast, tokens, first, last):
     if self.version[:2] == (1, 4):
         return False
 
-    # Make sure come froms all come from within "except_handler".
-    if end_token != "COME_FROM":
+    # Make sure COME_FROMs froms come from within "except_handler".
+    if end_token.kind != "COME_FROM":
         return False
-    return end_token.attr < tokens[first].offset
+    return end_token.attr is not None and end_token.attr < tokens[first].offset

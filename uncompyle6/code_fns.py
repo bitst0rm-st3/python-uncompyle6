@@ -1,4 +1,4 @@
-#  Copyright (c) 2015-2016, 2818-2021 by Rocky Bernstein
+#  Copyright (c) 2015-2016, 2818-2022, 2024 by Rocky Bernstein
 #  Copyright (c) 2005 by Dan Pascu <dan@windowmaker.org>
 #  Copyright (c) 2000-2002 by hartmut Goebel <h.goebel@crazy-compilers.com>
 #  Copyright (c) 1999 John Aycock
@@ -17,10 +17,12 @@
 #  along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 """
-CPython magic- and version- independent disassembly routines
+CPython magic- and version-independent disassembly routines
 
 There are two reasons we can't use Python's built-in routines
-from dis. First, the bytecode we are extracting may be from a different
+from ``dis``.
+
+First, the bytecode we are extracting may be from a different
 version of Python (different magic number) than the version of Python
 that is doing the extraction.
 
@@ -33,18 +35,19 @@ import sys
 from collections import deque
 
 from xdis import check_object_path, iscode, load_module
-from xdis.version_info import version_tuple_to_str
+from xdis.version_info import PythonImplementation, version_tuple_to_str
+
 from uncompyle6.scanner import get_scanner
 
 
 def disco(version, co, out=None, is_pypy=False):
     """
-    diassembles and deparses a given code block 'co'
+    disassembles and deparses a given code block ``co``.
     """
 
     assert iscode(co)
 
-    # store final output stream for case of error
+    # Store final output stream in case there is an error.
     real_out = out or sys.stdout
     print("# Python %s" % version_tuple_to_str(version), file=real_out)
     if co.co_filename:
@@ -60,11 +63,17 @@ def disco_loop(disasm, queue, real_out):
     while len(queue) > 0:
         co = queue.popleft()
         if co.co_name != "<module>":
-            print(
-                "\n# %s line %d of %s"
-                % (co.co_name, co.co_firstlineno, co.co_filename),
-                file=real_out,
-            )
+            if hasattr(co, "co_firstlineno"):
+                print(
+                    "\n# %s line %d of %s"
+                    % (co.co_name, co.co_firstlineno, co.co_filename),
+                    file=real_out,
+                )
+            else:
+                print(
+                    "\n# %s of %s" % (co.co_name, co.co_filename),
+                    file=real_out,
+                )
         tokens, customize = disasm(co)
         for t in tokens:
             if iscode(t.pattr):
@@ -92,21 +101,32 @@ def disco_loop(disasm, queue, real_out):
 
 def disassemble_file(filename, outstream=None):
     """
-    disassemble Python byte-code file (.pyc)
+    Disassemble Python byte-code file (.pyc).
 
     If given a Python source file (".py") file, we'll
     try to find the corresponding compiled object.
     """
     filename = check_object_path(filename)
-    (version, timestamp, magic_int, co, is_pypy, source_size, sip_hash) = load_module(
-        filename
-    )
-    if type(co) == list:
+    (
+        version,
+        timestamp,
+        magic_int,
+        co,
+        python_implementation,
+        source_size,
+        sip_hash,
+        _,
+    ) = load_module(filename)
+    if isinstance(co, list):
         for con in co:
             disco(version, con, outstream)
     else:
-        disco(version, co, outstream, is_pypy=is_pypy)
-    co = None
+        disco(
+            version,
+            co,
+            outstream,
+            is_pypy=python_implementation == PythonImplementation.PyPy,
+        )
 
 
 def _test():

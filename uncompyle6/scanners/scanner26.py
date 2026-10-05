@@ -1,4 +1,4 @@
-#  Copyright (c) 2015-2017, 2021-2022 by Rocky Bernstein
+#  Copyright (c) 2015-2017, 2021-2022, 2024 by Rocky Bernstein
 #  Copyright (c) 2005 by Dan Pascu <dan@windowmaker.org>
 #  Copyright (c) 2000-2002 by hartmut Goebel <h.goebel@crazy-compilers.com>
 #
@@ -23,33 +23,36 @@ use in deparsing.
 """
 
 import sys
-import uncompyle6.scanners.scanner2 as scan
-from uncompyle6.scanner import L65536
 
 # bytecode verification, verify(), uses JUMP_OPs from here
-from xdis.opcodes import opcode_26
+from xdis import iscode
 from xdis.bytecode import _get_const_info
+from xdis.opcodes import opcode_26
 
+import uncompyle6.scanners.scanner2 as scan
 from uncompyle6.scanner import Token
 
 intern = sys.intern
 
 JUMP_OPS = opcode_26.JUMP_OPS
 
+
 class Scanner26(scan.Scanner2):
     def __init__(self, show_asm=False):
         super(Scanner26, self).__init__((2, 6), show_asm)
 
         # "setup" opcodes
-        self.setup_ops = frozenset([
-            self.opc.SETUP_EXCEPT, self.opc.SETUP_FINALLY,
-            ])
+        self.setup_ops = frozenset(
+            [
+                self.opc.SETUP_EXCEPT,
+                self.opc.SETUP_FINALLY,
+            ]
+        )
 
         return
 
     def ingest(self, co, classname=None, code_objects={}, show_asm=None):
-        """
-        Create "tokens" the bytecode of an Python code object. Largely these
+        """Create "tokens" the bytecode of an Python code object. Largely these
         are the opcode name, but in some cases that has been modified to make parsing
         easier.
         returning a list of uncompyle6 Token's.
@@ -57,14 +60,17 @@ class Scanner26(scan.Scanner2):
         Some transformations are made to assist the deparsing grammar:
            -  various types of LOAD_CONST's are categorized in terms of what they load
            -  COME_FROM instructions are added to assist parsing control structures
-           -  operands with stack argument counts or flag masks are appended to the opcode name, e.g.:
+           -  operands with stack argument counts or flag masks are appended to the
+              opcode name, e.g.:
               *  BUILD_LIST, BUILD_SET
-              *  MAKE_FUNCTION and FUNCTION_CALLS append the number of positional arguments
+              *  MAKE_FUNCTION and FUNCTION_CALLS append the number of positional
+                 arguments
            -  EXTENDED_ARGS instructions are removed
 
-        Also, when we encounter certain tokens, we add them to a set which will cause custom
-        grammar rules. Specifically, variable arg tokens like MAKE_FUNCTION or BUILD_LIST
-        cause specific rules for the specific number of arguments they take.
+        Also, when we encounter certain tokens, we add them to a set
+        which will cause custom grammar rules. Specifically, variable
+        arg tokens like MAKE_FUNCTION or BUILD_LIST cause specific
+        rules for the specific number of arguments they take.
         """
 
         if not show_asm:
@@ -73,16 +79,19 @@ class Scanner26(scan.Scanner2):
         bytecode = self.build_instructions(co)
 
         # show_asm = 'after'
-        if show_asm in ('both', 'before'):
-            for instr in bytecode.get_instructions(co):
-                print(instr.disassemble())
-
+        if show_asm in ("both", "before"):
+            print("\n# ---- disassembly:")
+            bytecode.disassemble_bytes(
+                co,
+                line_starts=bytecode._linestarts,
+                asm_format="extended",
+            )
         # Container for tokens
         tokens = []
 
         customize = {}
         if self.is_pypy:
-            customize['PyPy'] = 1
+            customize["PyPy"] = 0
 
         codelen = len(self.code)
 
@@ -98,12 +107,14 @@ class Scanner26(scan.Scanner2):
             #   raise AssertionError
             #  and
             #   assert ...
-            if (self.code[i] == self.opc.JUMP_IF_TRUE and
-                i + 4 < codelen and
-                self.code[i+3] == self.opc.POP_TOP and
-                self.code[i+4] == self.opc.LOAD_GLOBAL):
-                if names[self.get_argument(i+4)] == 'AssertionError':
-                    self.load_asserts.add(i+4)
+            if (
+                self.code[i] == self.opc.JUMP_IF_TRUE
+                and i + 4 < codelen
+                and self.code[i + 3] == self.opc.POP_TOP
+                and self.code[i + 4] == self.opc.LOAD_GLOBAL
+            ):
+                if names[self.get_argument(i + 4)] == "AssertionError":
+                    self.load_asserts.add(i + 4)
 
         jump_targets = self.find_jump_targets(show_asm)
         # contains (code, [addrRefToCode])
@@ -112,21 +123,24 @@ class Scanner26(scan.Scanner2):
         i = self.next_stmt[last_stmt]
         replace = {}
         while i < codelen - 1:
-            if self.lines[last_stmt].next > i:
+            if self.lines and self.lines[last_stmt].next > i:
                 # Distinguish "print ..." from "print ...,"
                 if self.code[last_stmt] == self.opc.PRINT_ITEM:
                     if self.code[i] == self.opc.PRINT_ITEM:
-                        replace[i] = 'PRINT_ITEM_CONT'
+                        replace[i] = "PRINT_ITEM_CONT"
                     elif self.code[i] == self.opc.PRINT_NEWLINE:
-                        replace[i] = 'PRINT_NEWLINE_CONT'
+                        replace[i] = "PRINT_NEWLINE_CONT"
             last_stmt = i
             i = self.next_stmt[i]
 
         extended_arg = 0
+        i = -1
         for offset in self.op_range(0, codelen):
+            i += 1
             op = self.code[offset]
             op_name = self.opname[op]
-            oparg = None; pattr = None
+            oparg = None
+            pattr = None
 
             if offset in jump_targets:
                 jump_idx = 0
@@ -137,52 +151,84 @@ class Scanner26(scan.Scanner2):
                 # properly. For example, a "loop" with an "if" nested in it should have the
                 # "loop" tag last so the grammar rule matches that properly.
                 last_jump_offset = -1
-                for jump_offset  in sorted(jump_targets[offset], reverse=True):
+                for jump_offset in sorted(jump_targets[offset], reverse=True):
                     if jump_offset != last_jump_offset:
-                        tokens.append(Token(
-                            'COME_FROM', jump_offset, repr(jump_offset),
-                            offset="%s_%d" % (offset, jump_idx),
-                            has_arg = True))
+                        tokens.append(
+                            Token(
+                                "COME_FROM",
+                                jump_offset,
+                                repr(jump_offset),
+                                offset="%s_%d" % (offset, jump_idx),
+                                has_arg=True,
+                            )
+                        )
                         jump_idx += 1
                         last_jump_offset = jump_offset
             elif offset in self.thens:
-                tokens.append(Token(
-                    'THEN', None, self.thens[offset],
-                    offset="%s_0" % offset,
-                    has_arg = True))
+                tokens.append(
+                    Token(
+                        "THEN",
+                        None,
+                        self.thens[offset],
+                        offset="%s_0" % offset,
+                        has_arg=True,
+                    )
+                )
 
-            has_arg = (op >= self.opc.HAVE_ARGUMENT)
+            has_arg = op >= self.opc.HAVE_ARGUMENT
             if has_arg:
                 oparg = self.get_argument(offset) + extended_arg
                 extended_arg = 0
                 if op == self.opc.EXTENDED_ARG:
-                    extended_arg = oparg * L65536
+                    extended_arg += self.extended_arg_val(oparg)
                     continue
+
+                # Note: name used to match on rather than op since
+                # BUILD_SET isn't in earlier Pythons.
+                if op_name in (
+                    "BUILD_LIST",
+                    "BUILD_SET",
+                ):
+                    t = Token(
+                        op_name,
+                        oparg,
+                        pattr,
+                        offset,
+                        self.linestarts.get(offset, None),
+                        op,
+                        has_arg,
+                        self.opc,
+                    )
+
+                    collection_type = op_name.split("_")[1]
+                    next_tokens = self.bound_collection_from_tokens(
+                        tokens, t, len(tokens), "CONST_%s" % collection_type
+                    )
+                    if next_tokens is not None:
+                        tokens = next_tokens
+                        continue
+
                 if op in self.opc.CONST_OPS:
                     const = co.co_consts[oparg]
-                    # We can't use inspect.iscode() because we may be
-                    # using a different version of Python than the
-                    # one that this was byte-compiled on. So the code
-                    # types may mismatch.
-                    if hasattr(const, 'co_name'):
+                    if iscode(const):
                         oparg = const
-                        if const.co_name == '<lambda>':
-                            assert op_name == 'LOAD_CONST'
-                            op_name = 'LOAD_LAMBDA'
+                        if const.co_name == "<lambda>":
+                            assert op_name == "LOAD_CONST"
+                            op_name = "LOAD_LAMBDA"
                         elif const.co_name == self.genexpr_name:
-                            op_name = 'LOAD_GENEXPR'
-                        elif const.co_name == '<dictcomp>':
-                            op_name = 'LOAD_DICTCOMP'
-                        elif const.co_name == '<setcomp>':
-                            op_name = 'LOAD_SETCOMP'
+                            op_name = "LOAD_GENEXPR"
+                        elif const.co_name == "<dictcomp>":
+                            op_name = "LOAD_DICTCOMP"
+                        elif const.co_name == "<setcomp>":
+                            op_name = "LOAD_SETCOMP"
                         else:
                             op_name = "LOAD_CODE"
-                        # verify uses 'pattr' for comparison, since 'attr'
+                        # verify() uses 'pattr' for comparison, since 'attr'
                         # now holds Code(const) and thus can not be used
                         # for comparison (todo: think about changing this)
-                        # pattr = 'code_object @ 0x%x %s->%s' % \
+                        # pattr = 'code_object @ 0x%x %s->%s' %\
                         # (id(const), const.co_filename, const.co_name)
-                        pattr = '<code_object ' + const.co_name + '>'
+                        pattr = "<code_object " + const.co_name + ">"
                     else:
                         if oparg < len(co.co_consts):
                             argval, _ = _get_const_info(oparg, co.co_consts)
@@ -200,32 +246,42 @@ class Scanner26(scan.Scanner2):
                         # FIXME: this is a hack to catch stuff like:
                         #   if x: continue
                         # the "continue" is not on a new line.
-                        if len(tokens) and tokens[-1].kind == 'JUMP_BACK':
-                            tokens[-1].kind = intern('CONTINUE')
+                        if len(tokens) and tokens[-1].kind == "JUMP_BACK":
+                            tokens[-1].kind = intern("CONTINUE")
 
                 elif op in self.opc.JABS_OPS:
                     pattr = repr(oparg)
                 elif op in self.opc.LOCAL_OPS:
-                    pattr = varnames[oparg]
+                    if self.version < (1, 5):
+                        pattr = names[oparg]
+                    else:
+                        pattr = varnames[oparg]
                 elif op in self.opc.COMPARE_OPS:
                     pattr = self.opc.cmp_op[oparg]
                 elif op in self.opc.FREE_OPS:
                     pattr = free[oparg]
+
             if op in self.varargs_ops:
                 # CE - Hack for >= 2.5
                 #      Now all values loaded via LOAD_CLOSURE are packed into
                 #      a tuple before calling MAKE_CLOSURE.
-                if (self.version >= (2, 5) and op == self.opc.BUILD_TUPLE and
-                    self.code[self.prev[offset]] == self.opc.LOAD_CLOSURE):
+                if (
+                    self.version >= (2, 5)
+                    and op == self.opc.BUILD_TUPLE
+                    and self.code[self.prev[offset]] == self.opc.LOAD_CLOSURE
+                ):
                     continue
                 else:
-                    op_name = '%s_%d' % (op_name, oparg)
+                    op_name = "%s_%d" % (op_name, oparg)
                     customize[op_name] = oparg
             elif self.version > (2, 0) and op == self.opc.CONTINUE_LOOP:
                 customize[op_name] = 0
-            elif op_name in """
+            elif (
+                op_name
+                in """
                  CONTINUE_LOOP EXEC_STMT LOAD_LISTCOMP LOAD_SETCOMP
-                  """.split():
+                  """.split()
+            ):
                 customize[op_name] = 0
             elif op == self.opc.JUMP_ABSOLUTE:
                 # Further classify JUMP_ABSOLUTE into backward jumps
@@ -241,46 +297,60 @@ class Scanner26(scan.Scanner2):
                 # rule for that.
                 target = self.get_target(offset)
                 if target <= offset:
-                    op_name = 'JUMP_BACK'
-                    if (offset in self.stmts
-                        and self.code[offset+3] not in (self.opc.END_FINALLY,
-                                                          self.opc.POP_BLOCK)):
-                        if ((offset in self.linestarts and
-                            tokens[-1].kind == 'JUMP_BACK')
-                            or offset not in self.not_continue):
-                            op_name = 'CONTINUE'
+                    op_name = "JUMP_BACK"
+                    if offset in self.stmts and self.code[offset + 3] not in (
+                        self.opc.END_FINALLY,
+                        self.opc.POP_BLOCK,
+                    ):
+                        if (
+                            offset in self.linestarts and tokens[-1].kind == "JUMP_BACK"
+                        ) or offset not in self.not_continue:
+                            op_name = "CONTINUE"
                     else:
                         # FIXME: this is a hack to catch stuff like:
                         #   if x: continue
                         # the "continue" is not on a new line.
-                        if tokens[-1].kind == 'JUMP_BACK':
+                        if tokens[-1].kind == "JUMP_BACK":
                             # We need 'intern' since we have
                             # already have processed the previous
                             # token.
-                            tokens[-1].kind = intern('CONTINUE')
+                            tokens[-1].kind = intern("CONTINUE")
 
             elif op == self.opc.LOAD_GLOBAL:
                 if offset in self.load_asserts:
-                    op_name = 'LOAD_ASSERT'
+                    op_name = "LOAD_ASSERT"
             elif op == self.opc.RETURN_VALUE:
                 if offset in self.return_end_ifs:
-                    op_name = 'RETURN_END_IF'
+                    op_name = "RETURN_END_IF"
 
             linestart = self.linestarts.get(offset, None)
 
             if offset not in replace:
-                tokens.append(Token(
-                    op_name, oparg, pattr, offset, linestart, op,
-                    has_arg, self.opc))
+                tokens.append(
+                    Token(
+                        op_name, oparg, pattr, offset, linestart, op, has_arg, self.opc
+                    )
+                )
             else:
-                tokens.append(Token(
-                    replace[offset], oparg, pattr, offset, linestart, op,
-                    has_arg, self.opc))
+                tokens.append(
+                    Token(
+                        replace[offset],
+                        oparg,
+                        pattr,
+                        offset,
+                        linestart,
+                        op,
+                        has_arg,
+                        self.opc,
+                    )
+                )
                 pass
             pass
 
-        if show_asm in ('both', 'after'):
-            for t in tokens:
+        if show_asm in ("both", "after"):
+            print("\n# ---- tokenization:")
+            # FIXME: t.format() is changing tokens!
+            for t in tokens.copy():
                 print(t.format(line_prefix=""))
             print()
         return tokens, customize

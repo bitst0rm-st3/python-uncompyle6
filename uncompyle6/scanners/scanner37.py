@@ -1,4 +1,4 @@
-#  Copyright (c) 2016-2019, 2021-2022 by Rocky Bernstein
+#  Copyright (c) 2016-2019, 2021-2023 by Rocky Bernstein
 #
 #  This program is free software: you can redistribute it and/or modify
 #  it under the terms of the GNU General Public License as published by
@@ -13,7 +13,7 @@
 #  You should have received a copy of the GNU General Public License
 #  along with this program.  If not, see <http://www.gnu.org/licenses/>.
 """
-Python 3.7 bytecode decompiler scanner
+Python 3.7 bytecode decompiler scanner.
 
 Does some additional massaging of xdis-disassembled instructions to
 make things easier for decompilation.
@@ -24,20 +24,20 @@ scanner routine for Python 3.
 
 from typing import Tuple
 
-from uncompyle6.scanner import CONST_COLLECTIONS
-from uncompyle6.scanners.tok import Token
-from uncompyle6.scanners.scanner37base import Scanner37Base
-
 # bytecode verification, verify(), uses JUMP_OPs from here
 from xdis.opcodes import opcode_37 as opc
+
+from uncompyle6.scanner import CONST_COLLECTIONS, Token
+from uncompyle6.scanners.scanner37base import Scanner37Base
 
 # bytecode verification, verify(), uses JUMP_OPS from here
 JUMP_OPs = opc.JUMP_OPS
 
+
 class Scanner37(Scanner37Base):
-    def __init__(self, show_asm=None, is_pypy: bool=False):
-        Scanner37Base.__init__(self, (3, 7), show_asm)
-        self.is_pypy = is_pypy
+    def __init__(self, show_asm=None, debug="", is_pypy=False):
+        Scanner37Base.__init__(self, (3, 7), show_asm, debug, is_pypy)
+        self.debug = debug
         return
 
     pass
@@ -51,9 +51,9 @@ class Scanner37(Scanner37Base):
         assert count <= i
 
         if collection_type == "CONST_DICT":
-            # constant dictonaries work via BUILD_CONST_KEY_MAP and
+            # constant dictionaries work via BUILD_CONST_KEY_MAP and
             # handle the values() like sets and lists.
-            # However the keys() are an LOAD_CONST of the keys.
+            # However, the keys() are an LOAD_CONST of the keys.
             # adjust offset to account for this
             count += 1
 
@@ -90,6 +90,7 @@ class Scanner37(Scanner37Base):
                 has_arg=True,
                 has_extended_arg=False,
                 opc=self.opc,
+                optype="pseudo",
             )
         )
         for j in range(collection_start, i):
@@ -103,6 +104,7 @@ class Scanner37(Scanner37Base):
                     has_arg=True,
                     has_extended_arg=False,
                     opc=self.opc,
+                    optype=tokens[j].optype,
                 )
             )
         new_tokens.append(
@@ -120,7 +122,7 @@ class Scanner37(Scanner37Base):
         return new_tokens
 
     def ingest(
-        self, co, classname=None, code_objects={}, show_asm=None
+        self, bytecode, classname=None, code_objects={}, show_asm=None
     ) -> Tuple[list, dict]:
         """
         Create "tokens" the bytecode of an Python code object. Largely these
@@ -140,7 +142,9 @@ class Scanner37(Scanner37Base):
         grammar rules. Specifically, variable arg tokens like MAKE_FUNCTION or BUILD_LIST
         cause specific rules for the specific number of arguments they take.
         """
-        tokens, customize = Scanner37Base.ingest(self, co, classname, code_objects, show_asm)
+        tokens, customize = Scanner37Base.ingest(
+            self, bytecode, classname, code_objects, show_asm
+        )
         new_tokens = []
         for i, t in enumerate(tokens):
             # things that smash new_tokens like BUILD_LIST have to come first.
@@ -180,6 +184,7 @@ class Scanner37(Scanner37Base):
 
         return new_tokens, customize
 
+
 if __name__ == "__main__":
     from xdis.version_info import PYTHON_VERSION_TRIPLE, version_tuple_to_str
 
@@ -192,4 +197,4 @@ if __name__ == "__main__":
             print(t.format())
         pass
     else:
-        print("Need to be Python 3.7 to demo; I am version %s" % version_tuple_to_str())
+        print(f"Need to be Python 3.7 to demo; I am version {version_tuple_to_str()}.")

@@ -1,5 +1,5 @@
 #
-# (C) Copyright 2015-2018, 2020-2021 by Rocky Bernstein
+# (C) Copyright 2015-2018, 2020-2021, 2023, 2026 by Rocky Bernstein
 # (C) Copyright 2000-2002 by hartmut Goebel <h.goebel@crazy-compilers.com>
 #
 #  This program is free software: you can redistribute it and/or modify
@@ -18,18 +18,18 @@
 byte-code verification
 """
 
-from __future__ import print_function
-
-import operator, sys
-import xdis.std as dis
+import operator
+import sys
+from functools import reduce
 from subprocess import call
 
-import uncompyle6
+import xdis.std as dis
+from xdis import PYTHON_MAGIC_INT, iscode, load_file, load_module, pretty_code_flags
+from xdis.version_info import PythonImplementation
+
 from uncompyle6.scanner import Token as ScannerToken, get_scanner
-from xdis import iscode, load_file, load_module, pretty_code_flags, PYTHON_MAGIC_INT
 
 truediv = operator.truediv
-from functools import reduce
 
 
 def code_equal(a, b):
@@ -185,7 +185,7 @@ def cmp_code_objects(version, is_pypy, code_obj1, code_obj2, verify, name=""):
     # print dir(code_obj1)
     if isinstance(code_obj1, object):
         # new style classes (Python 2.2)
-        # assume _both_ code objects to be new stle classes
+        # assume _both_ code objects to be new style classes
         assert dir(code_obj1) == dir(code_obj2)
     else:
         # old style classes
@@ -205,7 +205,7 @@ def cmp_code_objects(version, is_pypy, code_obj1, code_obj2, verify, name=""):
         # should be faster and more sophisticated
         # if this compare fails, we use the old routine to
         # find out, what exactly is nor equal
-        # if this compare succeds, simply return
+        # if this compare succeeds, simply return
         # return
         pass
 
@@ -411,7 +411,7 @@ def cmp_code_objects(version, is_pypy, code_obj1, code_obj2, verify, name=""):
                                 check_jumps[dest1].append((i1, i2, dest2))
                             else:
                                 check_jumps[dest1] = [(i1, i2, dest2)]
-                        except:
+                        except Exception:
                             pass
 
                 i1 += 1
@@ -485,9 +485,10 @@ def compare_code_with_srcfile(pyc_filename, src_filename, verify):
         timestamp,
         magic_int,
         code_obj1,
-        is_pypy,
+        python_implementation,
         source_size,
         sip_hash,
+        _,
     ) = load_module(pyc_filename)
     if magic_int != PYTHON_MAGIC_INT:
         msg = (
@@ -500,7 +501,7 @@ def compare_code_with_srcfile(pyc_filename, src_filename, verify):
     except SyntaxError as e:
         # src_filename can be the first of a group sometimes
         return str(e).replace(src_filename, pyc_filename)
-    cmp_code_objects(version, is_pypy, code_obj1, code_obj2, verify)
+    cmp_code_objects(version, python_implementation, code_obj1, code_obj2, verify)
     if verify == "verify-run":
         try:
             retcode = call("%s %s" % (sys.executable, src_filename), shell=True)
@@ -520,19 +521,22 @@ def compare_files(pyc_filename1, pyc_filename2, verify):
         timestamp,
         magic_int1,
         code_obj1,
-        is_pypy,
+        python_implementation,
         source_size,
         sip_hash,
-    ) = uncompyle6.load_module(pyc_filename1)
+        _,
+    ) = load_module(pyc_filename1)
+    is_pypy = python_implementation is PythonImplementation.PyPy
     (
         version2,
         timestamp,
         magic_int2,
         code_obj2,
-        is_pypy,
+        python_implementation,
         source_size,
         sip_hash,
-    ) = uncompyle6.load_module(pyc_filename2)
+        _,
+    ) = load_module(pyc_filename2)
     if (magic_int1 != magic_int2) and verify == "verify":
         verify = "weak_verify"
     cmp_code_objects(version1, is_pypy, code_obj1, code_obj2, verify)

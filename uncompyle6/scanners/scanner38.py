@@ -1,4 +1,4 @@
-#  Copyright (c) 2019-2022 by Rocky Bernstein
+#  Copyright (c) 2019-2022, 2024 by Rocky Bernstein
 #
 #  This program is free software: you can redistribute it and/or modify
 #  it under the terms of the GNU General Public License as published by
@@ -22,26 +22,30 @@ This sets up opcodes Python's 3.8 and calls a generalized
 scanner routine for Python 3.7 and up.
 """
 
-from uncompyle6.scanners.tok import off2int
-from uncompyle6.scanners.scanner37 import Scanner37
-from uncompyle6.scanners.scanner37base import Scanner37Base
+from typing import Dict, Tuple
 
 # bytecode verification, verify(), uses JUMP_OPs from here
 from xdis.opcodes import opcode_38 as opc
+
+from uncompyle6.scanners.scanner37 import Scanner37
+from uncompyle6.scanners.scanner37base import Scanner37Base
+from uncompyle6.scanners.tok import off2int
 
 # bytecode verification, verify(), uses JUMP_OPS from here
 JUMP_OPs = opc.JUMP_OPS
 
 
 class Scanner38(Scanner37):
-    def __init__(self, show_asm=None):
-        Scanner37Base.__init__(self, (3, 8), show_asm)
-        self.debug = False
+    def __init__(self, show_asm=None, debug="", is_pypy=False):
+        Scanner37Base.__init__(self, (3, 8), show_asm, debug, is_pypy)
+        self.debug = debug
         return
 
     pass
 
-    def ingest(self, co, classname=None, code_objects={}, show_asm=None):
+    def ingest(
+        self, bytecode, classname=None, code_objects={}, show_asm=None
+    ) -> Tuple[list, dict]:
         """
         Create "tokens" the bytecode of an Python code object. Largely these
         are the opcode name, but in some cases that has been modified to make parsing
@@ -61,7 +65,7 @@ class Scanner38(Scanner37):
         cause specific rules for the specific number of arguments they take.
         """
         tokens, customize = super(Scanner38, self).ingest(
-            co, classname, code_objects, show_asm
+            bytecode, classname, code_objects, show_asm
         )
 
         # Hacky way to detect loop ranges.
@@ -69,7 +73,7 @@ class Scanner38(Scanner37):
         # The value is where the loop ends. In current Python,
         # JUMP_BACKS are always to loops. And blocks are ordered so that the
         # JUMP_BACK with the highest offset will be where the range ends.
-        jump_back_targets = {}
+        jump_back_targets: Dict[int, int] = {}
         for token in tokens:
             if token.kind == "JUMP_BACK":
                 jump_back_targets[token.attr] = token.offset
@@ -88,7 +92,7 @@ class Scanner38(Scanner37):
             if offset == next_end:
                 loop_ends.pop()
                 if self.debug:
-                    print("%sremove loop offset %s" % (" " * len(loop_ends), offset))
+                    print(f"{'  ' * len(loop_ends)}remove loop offset {offset}")
                     pass
                 next_end = (
                     loop_ends[-1]
@@ -102,13 +106,12 @@ class Scanner38(Scanner37):
                 next_end = off2int(jump_back_targets[offset], prefer_last=False)
                 if self.debug:
                     print(
-                        "%sadding loop offset %s ending at %s"
-                        % ("  " * len(loop_ends), offset, next_end)
+                        f"{'  ' * len(loop_ends)}adding loop offset {offset} ending at {next_end}"
                     )
                 loop_ends.append(next_end)
 
             # Turn JUMP opcodes into "BREAK_LOOP" opcodes.
-            # FIXME: this should be replaced by proper control flow.
+            # FIXME!!!!: this should be replaced by proper control flow.
             if opname in ("JUMP_FORWARD", "JUMP_ABSOLUTE") and len(loop_ends):
                 jump_target = token.attr
 
@@ -118,35 +121,26 @@ class Scanner38(Scanner37):
                     new_tokens.append(token)
                     continue
 
-                # We also want to avoid confusing BREAK_LOOPS with parts of the
-                # grammar rules for loops. (Perhaps we should change the grammar.)
-                # Try to find an adjacent JUMP_BACK which is part of the normal loop end.
+                j = i
+                while tokens[j - 1] in ("POP_TOP", "POP_BLOCK", "POP_EXCEPT"):
+                    j -= 1
+                    if tokens[j].linestart:
+                        break
+                token_with_linestart = tokens[j]
 
-                if i + 1 < len(tokens) and tokens[i + 1] == "JUMP_BACK":
-                    # Sometimes the jump back is after the "break" instruction..
-                    jump_back_index = i + 1
-                else:
-                    # and sometimes, because of jump-to-jump optimization, it is before the
-                    # jump target instruction.
-                    jump_back_index = self.offset2tok_index[jump_target] - 1
-                    while tokens[jump_back_index].kind.startswith("COME_FROM_"):
-                        jump_back_index -= 1
-                        pass
-                    pass
-                jump_back_token = tokens[jump_back_index]
-
-                # Is this a forward jump not next to a JUMP_BACK ? ...
-                break_loop = token.linestart and jump_back_token != "JUMP_BACK"
-
-                # or if there is looping jump back, then that loop
-                # should start before where the "break" instruction sits.
-                if break_loop or (
-                    jump_back_token == "JUMP_BACK"
-                    and jump_back_token.attr < token.off2int()
-                ):
+                if token_with_linestart.linestart:
                     token.kind = "BREAK_LOOP"
+
                 pass
             new_tokens.append(token)
+
+        if show_asm in ("both", "after"):
+            print("\n# ---- tokenization:")
+            # FIXME: t.format() is changing tokens!
+            for t in new_tokens.copy():
+                print(t.format(line_prefix=""))
+            print()
+
         return new_tokens, customize
 
 
@@ -162,4 +156,4 @@ if __name__ == "__main__":
             print(t.format())
         pass
     else:
-        print("Need to be Python 3.8 to demo; I am version %s" % version_tuple_to_str())
+        print(f"Need to be Python 3.8 to demo; I am version {version_tuple_to_str()}.")

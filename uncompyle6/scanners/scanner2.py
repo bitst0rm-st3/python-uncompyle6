@@ -1,4 +1,4 @@
-#  Copyright (c) 2015-2022 by Rocky Bernstein
+#  Copyright (c) 2015-2025 by Rocky Bernstein
 #  Copyright (c) 2005 by Dan Pascu <dan@windowmaker.org>
 #  Copyright (c) 2000-2002 by hartmut Goebel <h.goebel@crazy-compilers.com>
 #
@@ -36,12 +36,12 @@ Finally we save token information.
 from __future__ import print_function
 
 from copy import copy
-
-from xdis import code2num, iscode, op_has_argument, instruction_size
-from xdis.bytecode import _get_const_info
-from uncompyle6.scanner import Scanner, Token
-
 from sys import intern
+
+from xdis import code2num, instruction_size, iscode, op_has_argument
+from xdis.bytecode import _get_const_info, get_optype
+
+from uncompyle6.scanner import Scanner, Token
 
 
 class Scanner2(Scanner):
@@ -55,7 +55,7 @@ class Scanner2(Scanner):
         self.load_asserts = set([])
 
         # Create opcode classification sets
-        # Note: super initilization above initializes self.opc
+        # Note: super initialization above initializes self.opc
 
         # Ops that start SETUP_ ... We will COME_FROM with these names
         # Some blocks and END_ statements. And they can start
@@ -200,19 +200,21 @@ class Scanner2(Scanner):
         grammar rules. Specifically, variable arg tokens like MAKE_FUNCTION or BUILD_LIST
         cause specific rules for the specific number of arguments they take.
         """
-
         if not show_asm:
             show_asm = self.show_asm
 
         bytecode = self.build_instructions(co)
 
-        # show_asm = 'after'
         if show_asm in ("both", "before"):
-            for instr in bytecode.get_instructions(co):
-                print(instr.disassemble())
+            print("\n# ---- disassembly:")
+            bytecode.disassemble_bytes(
+                co,
+                line_starts=bytecode._linestarts,
+                asm_format="extended",
+            )
 
         # list of tokens/instructions
-        tokens = []
+        new_tokens = []
 
         # "customize" is in the process of going away here
         customize = {}
@@ -229,7 +231,6 @@ class Scanner2(Scanner):
         # 'LOAD_ASSERT' is used in assert statements.
         self.load_asserts = set()
         for i in self.op_range(0, codelen):
-
             # We need to detect the difference between:
             #   raise AssertionError
             #  and
@@ -289,7 +290,7 @@ class Scanner2(Scanner):
                         if come_from_type not in ("LOOP", "EXCEPT"):
                             come_from_name = "COME_FROM_%s" % come_from_type
                         pass
-                    tokens.append(
+                    new_tokens.append(
                         Token(
                             come_from_name,
                             jump_offset,
@@ -303,6 +304,7 @@ class Scanner2(Scanner):
 
             op = self.code[offset]
             op_name = self.op_name(op)
+            op_type = get_optype(op, self.opc)
 
             oparg = None
             pattr = None
@@ -313,6 +315,31 @@ class Scanner2(Scanner):
                 if op == self.opc.EXTENDED_ARG:
                     extended_arg += self.extended_arg_val(oparg)
                     continue
+
+                # Note: name used to match on rather than op since
+                # BUILD_SET isn't in earlier Pythons.
+                if op_name in (
+                    "BUILD_LIST",
+                    "BUILD_SET",
+                ):
+                    t = Token(
+                        op_name,
+                        oparg,
+                        pattr,
+                        offset,
+                        self.linestarts.get(offset, None),
+                        op,
+                        has_arg,
+                        self.opc,
+                    )
+                    collection_type = op_name.split("_")[1]
+                    next_tokens = self.bound_collection_from_tokens(
+                        new_tokens, t, len(new_tokens), "CONST_%s" % collection_type
+                    )
+                    if next_tokens is not None:
+                        new_tokens = next_tokens
+                        continue
+
                 if op in self.opc.CONST_OPS:
                     const = co.co_consts[oparg]
                     if iscode(const):
@@ -347,12 +374,12 @@ class Scanner2(Scanner):
                 elif op in self.opc.JREL_OPS:
                     #  use instead: hasattr(self, 'patch_continue'): ?
                     if self.version[:2] == (2, 7):
-                        self.patch_continue(tokens, offset, op)
+                        self.patch_continue(new_tokens, offset, op)
                     pattr = repr(offset + 3 + oparg)
                 elif op in self.opc.JABS_OPS:
                     # use instead: hasattr(self, 'patch_continue'): ?
                     if self.version[:2] == (2, 7):
-                        self.patch_continue(tokens, offset, op)
+                        self.patch_continue(new_tokens, offset, op)
                     pattr = repr(oparg)
                 elif op in self.opc.LOCAL_OPS:
                     pattr = varnames[oparg]
@@ -400,7 +427,16 @@ class Scanner2(Scanner):
                     #   either to a FOR_ITER or the instruction after a SETUP_LOOP
                     #   and it is followed by another JUMP_FORWARD
                     # then we'll take it as a "continue".
-                    j = self.offset2inst_index[offset]
+                    j = self.offset2inst_index.get(offset)
+
+                    # EXTENDED_ARG doesn't appear in instructions,
+                    # but is instead the next opcode folded into it, and has the offset
+                    # of the EXTENDED_ARG. Therefore in self.offset2nist_index we'll find
+                    # the instruction at the previous EXTENDED_ARG offset which is 3
+                    # bytes back.
+                    if j is None and offset > self.opc.ARG_MAX_VALUE:
+                        j = self.offset2inst_index[offset - 3]
+
                     target_index = self.offset2inst_index[target]
                     is_continue = (
                         self.insts[target_index - 1].opname == "SETUP_LOOP"
@@ -433,13 +469,21 @@ class Scanner2(Scanner):
             linestart = self.linestarts.get(offset, None)
 
             if offset not in replace:
-                tokens.append(
+                new_tokens.append(
                     Token(
-                        op_name, oparg, pattr, offset, linestart, op, has_arg, self.opc
+                        op_name,
+                        oparg,
+                        pattr,
+                        offset,
+                        linestart,
+                        op,
+                        has_arg,
+                        self.opc,
+                        optype=op_type,
                     )
                 )
             else:
-                tokens.append(
+                new_tokens.append(
                     Token(
                         replace[offset],
                         oparg,
@@ -449,16 +493,19 @@ class Scanner2(Scanner):
                         op,
                         has_arg,
                         self.opc,
+                        optype=op_type,
                     )
                 )
                 pass
             pass
 
         if show_asm in ("both", "after"):
-            for t in tokens:
+            print("\n# ---- tokenization:")
+            # FIXME: t.format() is changing tokens!
+            for t in new_tokens.copy():
                 print(t.format(line_prefix=""))
             print()
-        return tokens, customize
+        return new_tokens, customize
 
     def build_statement_indices(self):
         code = self.code
@@ -504,14 +551,17 @@ class Scanner2(Scanner):
         for s in stmt_list:
             if code[s] == self.opc.JUMP_ABSOLUTE and s not in pass_stmts:
                 target = self.get_target(s)
-                if target > s or self.lines[last_stmt].l_no == self.lines[s].l_no:
+                if target > s or (
+                    self.lines and self.lines[last_stmt].l_no == self.lines[s].l_no
+                ):
                     stmts.remove(s)
                     continue
                 j = self.prev[s]
                 while code[j] == self.opc.JUMP_ABSOLUTE:
                     j = self.prev[j]
                 if (
-                    self.version >= (2, 3) and self.opname_for_offset(j) == "LIST_APPEND"
+                    self.version >= (2, 3)
+                    and self.opname_for_offset(j) == "LIST_APPEND"
                 ):  # list comprehension
                     stmts.remove(s)
                     continue
@@ -605,6 +655,7 @@ class Scanner2(Scanner):
         parent = self.structs[0]
         start = parent["start"]
         end = parent["end"]
+        next_line_byte = end
 
         # Pick inner-most parent for our offset
         for struct in self.structs:
@@ -633,7 +684,8 @@ class Scanner2(Scanner):
             if setup_target != loop_end_offset:
                 self.fixed_jumps[offset] = loop_end_offset
 
-            (line_no, next_line_byte) = self.lines[offset]
+            if self.lines:
+                (line_no, next_line_byte) = self.lines[offset]
 
             # jump_back_offset is the instruction after the SETUP_LOOP
             # where we iterate back to.
@@ -886,8 +938,7 @@ class Scanner2(Scanner):
 
             # Is it an "and" inside an "if" or "while" block
             if op == self.opc.PJIF:
-
-                # Search for other POP_JUMP_IF_...'s targetting the
+                # Search for other POP_JUMP_IF_...'s targeting the
                 # same target, of the current POP_JUMP_... instruction,
                 # starting from current offset, and filter everything inside inner 'or'
                 # jumps and mid-line ifs
@@ -986,7 +1037,7 @@ class Scanner2(Scanner):
                         ):
                             self.fixed_jumps[offset] = rtarget
                         else:
-                            # note test for < 2.7 might be superflous although informative
+                            # note test for < 2.7 might be superfluous although informative
                             # for 2.7 a different branch is taken and the below code is handled
                             # under: elif op in self.pop_jump_if_or_pop
                             # below
@@ -1076,9 +1127,8 @@ class Scanner2(Scanner):
             if code_pre_rtarget in self.jump_forward:
                 if_end = self.get_target(pre_rtarget)
 
-                # Is this a loop and not an "if" statment?
+                # Is this a loop and not an "if" statement?
                 if (if_end < pre_rtarget) and (pre[if_end] in self.setup_loop_targets):
-
                     if if_end > start:
                         return
                     else:
@@ -1299,9 +1349,9 @@ class Scanner2(Scanner):
 
                 # FIXME FIXME FIXME
                 # All the conditions are horrible, and I am not sure I
-                # undestand fully what's going l
+                # understand fully what's going l
                 # We REALLY REALLY  need a better way to handle control flow
-                # Expecially for < 2.7
+                # Especially for < 2.7
                 if label is not None and label != -1:
                     if self.version[:2] == (2, 7):
                         # FIXME: rocky: I think we need something like this...

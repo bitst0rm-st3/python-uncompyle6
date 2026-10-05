@@ -1,62 +1,28 @@
-#!/usr/bin/env python
+"""
+  Check that the Python version running this is compatible with this installation medium.
+  Note: that we use 2.x compatible Python code here.
+"""
 import sys
+from setuptools import setup
 
-"""Setup script for the 'uncompyle6' distribution."""
+major = sys.version_info[0]
+minor = sys.version_info[1]
 
-SYS_VERSION = sys.version_info[0:2]
-if not ((2, 4) <= SYS_VERSION < (3, 11)):
-    mess = "Python Release 2.6 .. 3.10 are supported in this code branch."
-    if (2, 4) <= SYS_VERSION <= (2, 7):
-        mess += (
-            "\nFor your Python, version %s, use the python-2.4 code/branch."
-            % sys.version[0:3]
-        )
-    if (3, 3) <= SYS_VERSION < (3, 6):
-        mess += (
-            "\nFor your Python, version %s, use the python-3.3-to-3.5 code/branch."
-            % sys.version[0:3]
-        )
-    elif SYS_VERSION < (2, 4):
-        mess += (
-            "\nThis package is not supported for Python version %s." % sys.version[0:3]
-        )
-    print(mess)
-    raise Exception(mess)
+if major != 3 or not minor >= 11:
+    sys.stderr.write("This installation medium is only for Python 3.11 and later. You are running Python %s.%s.\n" % (major, minor))
 
-from __pkginfo__ import (
-    author,
-    author_email,
-    install_requires,
-    license,
-    long_description,
-    classifiers,
-    entry_points,
-    modname,
-    py_modules,
-    short_desc,
-    __version__,
-    web,
-    zip_safe,
-)
+if major == 3 and 6 <= minor <= 10:
+    sys.stderr.write("Please install using uncompyle6_36-x.y.z.tar.gz from https://github.com/rocky/python-uncompyle6/releases\n")
+    sys.exit(1)
+elif major == 3 and 3 <= minor <= 5:
+    sys.stderr.write("Please install using uncompyle6_33-x.y.z.tar.gz from https://github.com/rocky/python-uncompyle6/releases\n")
+    sys.exit(1)
+if major == 3 and 0 <= minor <= 2:
+    sys.stderr.write("Please install using uncompyle6_30-x.y.z.tar.gz from https://github.com/rocky/python-uncompyle6/releases\n")
+    sys.exit(1)
+elif major == 2:
+    sys.stderr.write("Please install using uncompyle6_24-x.y.z.tar.gz from https://github.com/rocky/python-uncompyle6/releases\n")
+    sys.exit(1)
 
-from setuptools import setup, find_packages
 
-setup(
-    author=author,
-    author_email=author_email,
-    classifiers=classifiers,
-    description=short_desc,
-    entry_points=entry_points,
-    install_requires=install_requires,
-    license=license,
-    long_description=long_description,
-    long_description_content_type="text/x-rst",
-    name=modname,
-    packages=find_packages(),
-    py_modules=py_modules,
-    test_suite="nose.collector",
-    url=web,
-    tests_require=["nose>=1.0"],
-    version=__version__,
-    zip_safe=zip_safe,
-)
+setup()
